@@ -115,7 +115,8 @@ func _record(b: PackedByteArray) -> Array:
 	var q := header_size
 	var vals: Array = []
 	var int_sizes := {1: 1, 2: 2, 3: 3, 4: 4, 5: 6, 6: 8}
-	for t in types:
+	for t_any in types:
+		var t: int = t_any
 		if t == 0:
 			vals.append(null)
 		elif int_sizes.has(t):
@@ -137,11 +138,11 @@ func _record(b: PackedByteArray) -> Array:
 		elif t == 9:
 			vals.append(1)
 		elif t % 2 == 0:
-			var n2 := (t - 12) / 2
+			var n2: int = (t - 12) / 2
 			vals.append(b.slice(q, q + n2))
 			q += n2
 		else:
-			var n3 := (t - 13) / 2
+			var n3: int = (t - 13) / 2
 			vals.append(b.slice(q, q + n3).get_string_from_utf8())
 			q += n3
 	return vals
