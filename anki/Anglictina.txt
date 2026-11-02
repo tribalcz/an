@@ -1,0 +1,7 @@
+#separator:tab
+#html:true
+#tags column:3
+ubiquitous	/juːˈbɪkwɪtəs/<br>Smartphones are <b>ubiquitous</b> now.	všudypřítomný	C1
+to mitigate	/ˈmɪtɪɡeɪt/	zmírnit	B2 sloveso
+reluctant	/rɪˈlʌktənt/	neochotný	B2
+Cloze: Praha leží na řece {{c1::Vltavě}}.			zeměpis

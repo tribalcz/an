@@ -1,0 +1,11 @@
+#separator:tab
+#html:true
+#tags column:4
+勉強	べんきょう · benkjó<br><br>毎日<b>勉強</b>します。<br><i>Studuji každý den.</i>	studium, učení	N4 sloveso
+食べる	たべる · taberu<br><br>朝ご飯を<b>食べる</b>。	jíst	N5 sloveso
+図書館	としょかん · tošokan	knihovna	N4 podstatné
+約束	やくそく · jakusoku<br><br><b>約束</b>を守る。	slib, domluva	N4
+経験	けいけん · kekken	zkušenost	N4 podstatné
+複雑	ふくざつ · fukuzacu	složitý	N3 přídavné
+天気	てんき · tenki	počasí	N5
+準備	じゅんび · džunbi	příprava	N4 sloveso

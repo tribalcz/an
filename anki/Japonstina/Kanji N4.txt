@@ -1,0 +1,6 @@
+#separator:tab
+#html:true
+#tags column:3
+漢	On: カン · Kun: —	Čína, han	N4 kanji
+字	On: ジ · Kun: あざ	znak, písmeno	N4 kanji
+電	On: デン	elektřina	N4 kanji
