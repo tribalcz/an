@@ -31,6 +31,9 @@ var front_rtl: RichTextLabel
 var show_btn: Button
 var answer_box: VBoxContainer
 var back_rtl: RichTextLabel
+var sound_btn: Button
+var player: AudioStreamPlayer
+var textures := {}
 
 
 func _ready() -> void:
@@ -141,8 +144,6 @@ func _rtl(size: int, center: bool) -> RichTextLabel:
 	r.add_theme_font_size_override("normal_font_size", size)
 	r.add_theme_font_size_override("bold_font_size", size)
 	r.add_theme_font_size_override("italics_font_size", size)
-	if center:
-		r.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	return r
 
 
@@ -281,7 +282,18 @@ func _build_ui() -> void:
 	back_rtl.add_theme_color_override("default_color", C_MUTED)
 	answer_box.add_child(back_rtl)
 
-	var hint := _label("Mezerník otočit   ·   ↑ ↓ další karta   ·   F5 znovu načíst", 12, C_FAINT)
+	sound_btn = Button.new()
+	sound_btn.text = "▶  Přehrát zvuk (P)"
+	sound_btn.focus_mode = Control.FOCUS_NONE
+	sound_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	sound_btn.visible = false
+	sound_btn.pressed.connect(_play_sound)
+	stage.add_child(sound_btn)
+
+	player = AudioStreamPlayer.new()
+	add_child(player)
+
+	var hint := _label("Mezerník otočit   ·   ↑ ↓ další karta   ·   P zvuk   ·   F5 znovu načíst", 12, C_FAINT)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	right.add_child(hint)
 
@@ -289,6 +301,7 @@ func _build_ui() -> void:
 # ---------------------------------------------------------------- data
 
 func _reload() -> void:
+	textures.clear()
 	cards = Loader.load_all()
 	path_lbl.text = Loader.anki_dir()
 	_build_deck_tree()
@@ -346,6 +359,8 @@ func _apply_filter() -> void:
 		filtered.append(c)
 		list.add_item(c.title)
 	status_lbl.text = "%d z %d karet" % [filtered.size(), cards.size()]
+	if not Loader.warnings.is_empty():
+		status_lbl.text += "   ⚠ " + " ".join(Loader.warnings)
 	if filtered.is_empty():
 		cur = -1
 		_render()
@@ -379,8 +394,9 @@ func _render() -> void:
 		side_lbl.visible = false
 		show_btn.visible = false
 		answer_box.visible = false
+		sound_btn.visible = false
 		if cards.is_empty():
-			front_rtl.text = "[color=#8a92a6]V adresáři anki/ nejsou žádné karty.\nVlož sem textový export z Anki (.txt, .tsv, .csv).[/color]"
+			front_rtl.text = "[color=#8a92a6]V adresáři anki/ nejsou žádné karty.\nVlož sem balíček .apkg nebo textový export z Anki (.txt, .tsv, .csv).[/color]"
 		else:
 			front_rtl.text = "[color=#8a92a6]Nic nenalezeno.[/color]"
 		front_rtl.add_theme_font_size_override("normal_font_size", 18)
@@ -391,13 +407,99 @@ func _render() -> void:
 	crumb_lbl.text = str(c.deck).replace("::", "  ›  ")
 	tags_lbl.text = "   ".join(c.tags)
 	side_lbl.visible = true
-	front_rtl.text = "[center]" + Loader.to_bbcode(c.front, c.html) + "[/center]"
-	var parts: Array = []
+	front_rtl.clear()
+	front_rtl.push_paragraph(HORIZONTAL_ALIGNMENT_CENTER)
+	_append_bb(front_rtl, Loader.to_bbcode(c.front, c.html), c, 160)
+	front_rtl.pop()
+
+	back_rtl.clear()
+	back_rtl.push_paragraph(HORIZONTAL_ALIGNMENT_CENTER)
+	var first := true
 	for b in c.backs:
-		parts.append(Loader.to_bbcode(b, c.html))
-	back_rtl.text = "[center]" + "\n\n".join(parts) + "[/center]"
+		var bb: String = Loader.to_bbcode(b.text, c.html)
+		if bb == "":
+			continue
+		if not first:
+			back_rtl.add_text("\n\n")
+		first = false
+		if b.name != "":
+			back_rtl.push_color(C_FAINT)
+			back_rtl.push_font_size(12)
+			back_rtl.add_text(str(b.name).to_upper())
+			back_rtl.pop()
+			back_rtl.pop()
+			back_rtl.add_text("\n")
+		_append_bb(back_rtl, bb, c, 320)
+	back_rtl.pop()
+
 	answer_box.visible = shown
 	show_btn.visible = not shown
+	sound_btn.visible = not c.sounds.is_empty()
+
+
+## Přidá BBCode text; značky \u0001jméno\u0002 nahradí obrázkem z balíčku.
+func _append_bb(rtl: RichTextLabel, bb: String, card: Dictionary, max_h: int) -> void:
+	var parts := bb.split("\u0001")
+	rtl.append_text(parts[0])
+	for i in range(1, parts.size()):
+		var seg: String = parts[i]
+		var k := seg.find("\u0002")
+		if k < 0:
+			rtl.append_text(seg)
+			continue
+		var tex := _texture(card, seg.substr(0, k))
+		if tex != null:
+			var h := mini(tex.get_height(), max_h)
+			var w := int(round(float(tex.get_width()) * h / tex.get_height()))
+			rtl.add_image(tex, w, h)
+		else:
+			rtl.append_text("[color=#5b6275][obrázek chybí][/color]")
+		rtl.append_text(seg.substr(k + 1))
+
+
+func _texture(card: Dictionary, file_name: String) -> Texture2D:
+	var key := str(card.pkg) + "|" + file_name
+	if textures.has(key):
+		return textures[key]
+	var tex: Texture2D = null
+	var bytes := Loader.media_bytes(card.pkg, file_name)
+	if not bytes.is_empty():
+		var img := Image.new()
+		var err := ERR_FILE_UNRECOGNIZED
+		match file_name.get_extension().to_lower():
+			"png":
+				err = img.load_png_from_buffer(bytes)
+			"jpg", "jpeg":
+				err = img.load_jpg_from_buffer(bytes)
+			"webp":
+				err = img.load_webp_from_buffer(bytes)
+			"svg":
+				err = img.load_svg_from_buffer(bytes)
+		if err == OK:
+			tex = ImageTexture.create_from_image(img)
+	textures[key] = tex
+	return tex
+
+
+func _play_sound() -> void:
+	if cur < 0:
+		return
+	var c: Dictionary = filtered[cur]
+	for sound_name in c.sounds:
+		var bytes := Loader.media_bytes(c.pkg, sound_name)
+		if bytes.is_empty():
+			continue
+		match str(sound_name).get_extension().to_lower():
+			"mp3":
+				var st := AudioStreamMP3.new()
+				st.data = bytes
+				player.stream = st
+				player.play()
+				return
+			"ogg":
+				player.stream = AudioStreamOggVorbis.load_from_buffer(bytes)
+				player.play()
+				return
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -407,7 +509,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if filtered.is_empty():
 		return
-	if event.is_action_pressed("ui_accept"):
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_P:
+		_play_sound()
+	elif event.is_action_pressed("ui_accept"):
 		_toggle()
 	elif event.is_action_pressed("ui_down"):
 		_select(cur + 1)

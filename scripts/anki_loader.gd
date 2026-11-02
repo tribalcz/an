@@ -5,7 +5,13 @@ extends RefCounted
 ## Podporované hlavičky: #separator, #html, #tags column, #deck column.
 ## Pole v uvozovkách (včetně víceřádkových) jsou podporována.
 
+const Sqlite := preload("res://scripts/sqlite_reader.gd")
 const EXTENSIONS := ["txt", "tsv", "csv"]
+
+## Varování z posledního načtení (např. nepodporovaný .apkg).
+static var warnings: Array = []
+## Otevřené .apkg archivy pro čtení médií: cesta -> { reader: ZIPReader, media: { jméno: položka } }
+static var packages: Dictionary = {}
 
 
 static func anki_dir() -> String:
@@ -14,9 +20,14 @@ static func anki_dir() -> String:
 	return OS.get_executable_path().get_base_dir().path_join("anki")
 
 
-## Vrátí pole karet: { front, backs: Array[String], deck, tags: Array, html, title, search }.
+## Vrátí pole karet:
+## { front, backs: [{name, text}], deck, tags, html, title, search, pkg, sounds }.
 static func load_all() -> Array:
 	var cards: Array = []
+	warnings.clear()
+	for k in packages:
+		packages[k].reader.close()
+	packages.clear()
 	_scan(anki_dir(), "", cards)
 	return cards
 
@@ -40,7 +51,9 @@ static func _scan(dir_path: String, deck_prefix: String, out: Array) -> void:
 	files.sort()
 	dirs.sort()
 	for f in files:
-		if f.get_extension().to_lower() in EXTENSIONS:
+		if f.get_extension().to_lower() == "apkg":
+			_parse_apkg(dir_path.path_join(f), deck_prefix, out)
+		elif f.get_extension().to_lower() in EXTENSIONS:
 			var base: String = f.get_basename()
 			var deck := base if deck_prefix == "" else deck_prefix + "::" + base
 			_parse_file(dir_path.path_join(f), deck, out)
@@ -111,18 +124,136 @@ static func _parse_file(path: String, default_deck: String, out: Array) -> void:
 		var backs: Array = []
 		for i in range(1, fields.size()):
 			if str(fields[i]).strip_edges() != "":
-				backs.append(fields[i])
-		var front_plain := plain(front)
-		var back_plain := plain(" ".join(backs))
-		out.append({
-			"front": front,
-			"backs": backs,
-			"deck": deck,
-			"tags": tags,
-			"html": html,
-			"title": (front_plain.substr(0, 40) + ("  —  " + back_plain.substr(0, 40) if back_plain != "" else "")),
-			"search": (front_plain + " " + back_plain + " " + " ".join(tags) + " " + deck).to_lower(),
-		})
+				backs.append({"name": "", "text": fields[i]})
+		out.append(_make_card(front, backs, deck, tags, html, ""))
+
+
+static func _make_card(front: String, backs: Array, deck: String, tags: Array, html: bool, pkg: String) -> Dictionary:
+	var front_plain := plain(front)
+	var texts: Array = []
+	var sounds: Array = []
+	var re := RegEx.create_from_string("\\[sound:([^\\]]+)\\]")
+	for m in re.search_all(front):
+		sounds.append(m.get_string(1))
+	for b in backs:
+		texts.append(b.text)
+		for m in re.search_all(b.text):
+			sounds.append(m.get_string(1))
+	var back_plain := plain(" ".join(texts))
+	return {
+		"front": front,
+		"backs": backs,
+		"deck": deck,
+		"tags": tags,
+		"html": html,
+		"pkg": pkg,
+		"sounds": sounds,
+		"title": front_plain.substr(0, 40) + ("  —  " + back_plain.substr(0, 40) if back_plain != "" else ""),
+		"search": (front_plain + " " + back_plain + " " + " ".join(tags) + " " + deck).to_lower(),
+	}
+
+
+# ---------------------------------------------------------------- .apkg
+
+static func _parse_apkg(path: String, deck_prefix: String, out: Array) -> void:
+	var zr := ZIPReader.new()
+	if zr.open(path) != OK:
+		warnings.append("%s: nelze otevřít archiv." % path.get_file())
+		return
+	var files := zr.get_files()
+	var db_name := ""
+	for cand in ["collection.anki21", "collection.anki2"]:
+		if cand in files:
+			db_name = cand
+			break
+	if db_name == "":
+		warnings.append("%s: nový formát (collection.anki21b) zatím není podporovaný. V Anki exportuj s volbou „Podpora starších verzí Anki“." % path.get_file())
+		zr.close()
+		return
+
+	var db := Sqlite.new()
+	if not db.open_buffer(zr.read_file(db_name)):
+		warnings.append("%s: databáze není platná." % path.get_file())
+		zr.close()
+		return
+
+	# Modely (názvy polí) a balíčky jsou v tabulce col jako JSON.
+	var models: Dictionary = {}
+	var decks: Dictionary = {}
+	var col := db.table_rows("col")
+	if not col.is_empty():
+		var v: Array = col[0].vals
+		if v.size() > 10:
+			var m = JSON.parse_string(str(v[9]))
+			var dk = JSON.parse_string(str(v[10]))
+			if m is Dictionary:
+				models = m
+			if dk is Dictionary:
+				decks = dk
+
+	# Balíček poznámky = balíček její první karty.
+	var note_deck := {}
+	var note_ord := {}
+	for row in db.table_rows("cards"):
+		var cv: Array = row.vals
+		var nid: int = cv[1]
+		var ord: int = cv[3]
+		if not note_ord.has(nid) or ord < note_ord[nid]:
+			note_ord[nid] = ord
+			note_deck[nid] = cv[2]
+
+	# Média: soubor "media" mapuje číslo položky v archivu na původní jméno.
+	var media := {}
+	if "media" in files:
+		var mm = JSON.parse_string(zr.read_file("media").get_string_from_utf8())
+		if mm is Dictionary:
+			for num in mm:
+				media[str(mm[num])] = str(num)
+	packages[path] = {"reader": zr, "media": media}
+
+	var fallback_deck := path.get_file().get_basename()
+	if deck_prefix != "":
+		fallback_deck = deck_prefix + "::" + fallback_deck
+	for row in db.table_rows("notes"):
+		var nv: Array = row.vals
+		var mid := str(nv[2])
+		var tags: Array = []
+		for tg in str(nv[5]).split(" ", false):
+			tags.append(tg)
+		var fields: PackedStringArray = str(nv[6]).split("\u001f")
+		if fields.is_empty() or fields[0].strip_edges() == "":
+			continue
+
+		var names: Array = []
+		if models.has(mid):
+			var flds: Array = models[mid].get("flds", [])
+			flds.sort_custom(func(a, b): return int(a.get("ord", 0)) < int(b.get("ord", 0)))
+			for f in flds:
+				names.append(str(f.get("name", "")))
+
+		var deck := fallback_deck
+		var did = note_deck.get(row.rowid, null)
+		if did != null and decks.has(str(did)):
+			var dn: String = str(decks[str(did)].get("name", ""))
+			if dn != "":
+				deck = dn if deck_prefix == "" else deck_prefix + "::" + dn
+
+		var backs: Array = []
+		for i in range(1, fields.size()):
+			if fields[i].strip_edges() != "":
+				backs.append({"name": names[i] if i < names.size() else "", "text": fields[i]})
+		out.append(_make_card(fields[0], backs, deck, tags, true, path))
+
+
+## Bajty média z .apkg podle původního jména souboru (prázdné pole, když chybí).
+static func media_bytes(pkg: String, file_name: String) -> PackedByteArray:
+	if not packages.has(pkg):
+		return PackedByteArray()
+	var info: Dictionary = packages[pkg]
+	var key: String = info.media.get(file_name, info.media.get(file_name.uri_decode(), ""))
+	if key == "":
+		return PackedByteArray()
+	return info.reader.read_file(key)
 
 
 static func _separator(name: String) -> String:
@@ -201,6 +332,7 @@ static func plain(s: String) -> String:
 ## Převod HTML z Anki na BBCode pro RichTextLabel.
 static func to_bbcode(s: String, html: bool) -> String:
 	var t := _sub(s, "\\[sound:[^\\]]*\\]", "")
+	t = _sub(t, "(?i)<img[^>]*?src=[\"']([^\"']+)[\"'][^>]*>", "\u0001$1\u0002")
 	t = t.replace("[", "[lb]")
 	t = _sub(t, "\\{\\{c\\d+::(.*?)(::.*?)?\\}\\}", "[color=#8aa4ff]$1[/color]")
 	if html:
