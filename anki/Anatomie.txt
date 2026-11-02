@@ -1,5 +1,0 @@
-#separator:tab
-#html:true
-#tags column:3
-Musculus biceps brachii	Původ: scapula (caput longum, caput breve)<br>Úpon: tuberositas radii<br>Funkce: flexe a supinace předloktí	Dvojhlavý sval pažní	svaly paže
-Nervus ulnaris	Inervuje m. flexor carpi ulnaris a mediální část m. flexor digitorum profundus	Loketní nerv	nervy
